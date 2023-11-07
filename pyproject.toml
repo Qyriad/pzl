@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pzl"
+version = "0.0.1"
+dependencies = [
+  "psutil ~= 5.9"
+]
+
+[project.scripts]
+pzl = "pzl:main"
