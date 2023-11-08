@@ -66,9 +66,10 @@ class ProcessField(Generic[T]):
         return self.value < other.value
 
     def __str__(self):
+
         match self.value:
-            case psutil.Error:
-                return type(self.value).__name__
+            case psutil.Error() as e:
+                return type(e).__name__
 
             case None:
                 return ""
@@ -77,8 +78,8 @@ class ProcessField(Generic[T]):
 
     def format(self) -> Text:
         match self.value:
-            case psutil.Error:
-                return Text.from_markup(f"[dim]{type(self.value).__name__}")
+            case psutil.Error() as e:
+                return Text.from_markup(f"[dim]{type(e).__name__}")
             case None:
                 return Text.from_markup(f"[dim]none")
 
