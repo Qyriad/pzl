@@ -1,16 +1,20 @@
 import argparse
+import builtins
 from collections.abc import Iterator
 from dataclasses import dataclass
 import itertools
+from pathlib import Path
 import re
 import sys
-from typing import Any, Callable, Literal, Optional, Union
+from typing import Any, ClassVar, Callable, Generic, Literal, Optional, Union, TypeVar
 
 import psutil
 import rich, rich.text, rich.table, rich.console
+from rich.align import Align
 from rich.text import Text
 from rich.table import Table
 from rich.console import Console
+from rich.columns import Columns
 
 @dataclass
 class Selector:
@@ -44,61 +48,181 @@ class Process(psutil.Process):
 def process_iter(*args, **kwargs) -> Iterator[Process]:
     return (Process(proc.pid) for proc in psutil.process_iter(*args, **kwargs))
 
+def abbrev_home(path: str) -> str:
+    without_prefix = path.removeprefix(str(Path.home()))
+    if without_prefix != path:
+        return f"~{without_prefix}"
+    return path
+
+T = TypeVar("T")
 @dataclass
-class ProcMatch:
+class ProcessField(Generic[T]):
+    """ Generic and base class for process fields. """
 
-    #proc: Process
-    #matched_value: str
-    #matched_on: Union[Callable[[], str], Any]
-    #match: re.Match
-    #
-    #def format(self) -> list[Text]:
-    #
-    #    proc = self.proc
-    #
-    #    columns = []
-    #
-    #    for field in proc.pid_, proc.name, proc.exe, proc.cmdline0:
-    #
-    #        if field == self.matched_on:
-    #            print(f"{field=}, {self.matched_on=}")
-    #            col = Text.from_markup(f"[bold]{field()}[/bold]")
-    #        else:
-    #            col = Text.from_markup(str(field()))
-    #
-    #        columns.append(col)
-    #
-    #    return columns
+    name: str
+    value: T | psutil.Error
 
-    pid: int
-    matched_on: str
+    def __lt__(self, other):
+        return self.value < other.value
 
+    def __str__(self):
+        match self.value:
+            case psutil.Error:
+                return type(self.value).__name__
 
-def proc_match(proc: Process, pattern: re.Pattern, match_on: Union[Callable[[], str], Any]) -> Optional[ProcMatch]:
-    try:
-        if callable(match_on):
-            value = match_on()
-        else:
-            value = str(match_on)
+            case None:
+                return ""
 
-        if value and (match := pattern.search(value)):
-            #return ProcMatch(proc=proc, matched_value=value, matched_on=match_on, match=match)
-            return ProcMatch(pid=proc.pid, matched_on=match_on.__name__) # XXX
+        return str(self.value)
 
-    except psutil.AccessDenied:
-        pass
+    def format(self) -> Text:
+        match self.value:
+            case psutil.Error:
+                return Text.from_markup(f"[dim]{type(self.value).__name__}")
+            case None:
+                return Text.from_markup(f"[dim]none")
 
+        markup = ""
+        if self.name == "pid":
+            markup = "[cyan]"
 
-def catch_as_none(function: Callable, *exceptions: type[Exception]):
+        return Text.from_markup(f"{markup}{self}")
 
-    # By default catch `Exception` and subclasses..
-    if not exceptions:
-        exceptions = (Exception,)
+    @classmethod
+    def for_name(cls, name: str) -> type:
+        for subcls in cls.__subclasses__():
+            if subcls.name == name:
+                return subcls
 
-    try:
-        return function()
-    except exceptions:
+        def process_field_for_name(value):
+            return cls(name, value)
+
+        return process_field_for_name # type: ignore
+
+@dataclass
+class ParentField(ProcessField):
+    name: ClassVar[str] = "ppid"
+    value: int | None
+
+    #def format(self):
+    #    # Try to get the parent process.
+    #    parent = psutil.Process(self.value)
+    #    pname = parent.name()
+    #    if pname:
+    #        subgrid = Table.grid(expand=True)
+    #        subgrid.add_column(justify="left")
+    #        subgrid.add_column(justify="right")
+    #        subgrid.add_row(Text.from_markup(f"[bright]{self.value}"), Text.from_markup(f"[dim] ({pname})"))
+    #        return subgrid
+    #    else:
+    #        return str(self)
+
+@dataclass
+class Cmdline0Field(ProcessField):
+    name: ClassVar[str] = "cmdline0"
+    value: str | None | psutil.Error
+
+    def __str__(self):
+        match self.value:
+            case str(string):
+                return abbrev_home(string)
+
+        return super().__str__()
+
+@dataclass
+class TerminalField(ProcessField):
+
+    name: ClassVar[str] = "terminal"
+
+    value: str | None | psutil.Error
+
+    def __str__(self):
+        match self.value:
+            case str(string):
+                return string.removeprefix("/dev/")
+
+        return super().__str__()
+
+T = TypeVar("T")
+ProcField = Union[T, psutil.Error]
+OptionalProcField = Union[T, psutil.Error, None]
+
+@dataclass
+class ProcInfo:
+
+    pid: ProcessField[int]
+    ppid: ParentField
+    name: ProcessField[str]
+    cmdline: ProcessField[list[str]]
+    exe: ProcessField[Path | None]
+    terminal: TerminalField
+    status: ProcField[str]
+    username: ProcField[str]
+
+    _matched_field: Optional[str] = None
+
+    @classmethod
+    def from_process(cls, proc: psutil.Process):
+
+        init_args = dict()
+
+        init_args["pid"] = ProcessField[int](name="pid", value=proc.pid)
+
+        for field in "name ppid cmdline exe terminal status username".split():
+            getter = getattr(proc, field)
+            try:
+                value = getter()
+            except psutil.Error as e:
+                value = e
+
+            init_args[field] = ProcessField.for_name(field)(value)
+
+        return cls(**init_args)
+
+    @classmethod
+    def sorter(cls, proc):
+        return (proc.username, proc.ppid, proc.terminal, proc.pid)
+
+    @property
+    def cmdline0(self) -> Cmdline0Field:
+
+        match self.cmdline.value:
+            case [cmd, *_rest]:
+                return Cmdline0Field(cmd)
+            case []:
+                return Cmdline0Field(None)
+
+        return Cmdline0Field(self.cmdline.value)
+
+    @property
+    def parent_name(self) -> Optional[ProcessField[str]]:
+        match self.ppid.value:
+            case int(ppid):
+                parent = psutil.Process(ppid)
+                field = ProcessField(name="parent", value=parent.name())
+                field.format = lambda: Text.from_markup(f"[dim]({field.value})")
+                return field
+
         return None
+
+    def format_row(self, fields=None) -> list[Text]:
+        if not fields:
+            fields = "pid ppid parent_name name cmdline0 exe terminal status username".split()
+
+        row = []
+        for field in fields:
+            try:
+                value = getattr(self, field).format()
+            except AttributeError as e:
+                e.add_note(f"field {field} on {self} was None")
+                raise
+
+            if field == self._matched_field:
+                row.append(Text.from_markup(f"[bold]{value}"))
+            else:
+                row.append(value)
+
+        return row
 
 
 class ExceptNoneMeta(type):
@@ -155,20 +279,50 @@ def main():
     parser.add_argument("selectors", type=str, action="append", nargs="*")
     parser.add_argument("-s", dest="selectors", type=str, action="append")
     parser.add_argument("-p", "--parent", dest="parent_selector")
+    parser.add_argument("-g", "--group", help="Comma separated grouping hierarchy")
 
     args = parser.parse_args()
-    print(args)
+    #print(args)
 
     selector = args.selectors[0] # FIXME: for each selector.
     key, _, value = selector.partition("=")
     if not value:
         value = key
-        key = "default"
+        key = "smart"
 
     if value.startswith("/"):
-        value = re.compile(value[1:])
+        matcher_value = re.compile(value[1:])
     else:
-        value = re.compile(re.escape(value))
+        matcher_value = re.compile(re.escape(value))
+
+    processes = [ProcInfo.from_process(process) for process in psutil.process_iter(ATTRS)]
+
+    matched_processes = []
+
+    for field_name in "name cmdline0 exe".split():
+        for proc in (p for p in processes if p not in matched_processes):
+            field_value = getattr(proc, field_name)
+            if not isinstance(field_value, psutil.Error) and field_value is not None:
+                try:
+                    if matcher_value.search(str(field_value)):
+                        proc._matched_field = field_name
+                        matched_processes.append(proc)
+                except:
+                    print(f"{proc=}, {field_value=}")
+                    raise
+
+    table = Table(box=None, expand=False)
+    for col in ["pid", "parent", "", *"name cmdline0 exe terminal status username".split()]:
+        table.add_column(col)
+
+    #sorted_procs = sorted(matched_processes, key=lambda proc: (proc.username, proc.ppid, proc.terminal))
+    sorted_procs = sorted(matched_processes, key=ProcInfo.sorter)
+    for proc in sorted_procs:
+        table.add_row(*proc.format_row())
+
+    Console().print(table)
+
+    return
 
     matching_procs = []
     for proc in map(proc_map, process_iter(ATTRS)):
@@ -205,37 +359,6 @@ def main():
         table.add_row(*row)
 
     Console().print(table)
-
-    return
-
-    ignore_access = except_none[psutil.AccessDenied]
-
-    # Try name, then cmdline[0], then exe, then cmdline[:].
-    #matching_name = (proc for proc in psutil.process_iter(ATTRS) if value.search(proc.name()))
-    #matching_exe = (proc for proc in psutil.process_iter(ATTRS) if ignore_access(lambda : value.search(proc.exe())))
-    #matching_cmdline0 = (proc for proc in psutil.process_iter(ATTRS) if ignore_access(lambda : value.search(proc.cmdline()[0])))
-    matching_name = filter(bool, (proc_match(proc, value, proc.name) for proc in process_iter(ATTRS)))
-    matching_cmdline0 = filter(bool, (proc_match(proc, value, proc.cmdline0) for proc in process_iter(ATTRS)))
-
-    #find_iter = itertools.chain(matching_name, matching_exe, matching_cmdline0)
-    find_iter = itertools.chain(matching_name, matching_cmdline0)
-
-    #all_found = []
-    #if first := next(find_iter, None):
-    #    all_found.append(first)
-    #all_found.extend(list(find_iter))
-
-    #table_rows = [match.format() for match in find_iter]
-
-    table = Table(box=None)
-    for col in "pid name exe cmdline".split():
-        table.add_column(col)
-
-    for match in find_iter:
-        table.add_row(*match.format())
-
-    Console().print(table)
-
 
 if __name__ == "__main__":
     sys.exit(main())
