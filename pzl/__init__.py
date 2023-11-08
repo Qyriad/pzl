@@ -33,21 +33,6 @@ ATTRS = [
     "username",
 ]
 
-class Process(psutil.Process):
-
-    def pid_(self):
-        return self.pid
-
-    def cmdline0(self):
-        try:
-            return self.cmdline()[0]
-        except IndexError:
-            return None
-
-
-def process_iter(*args, **kwargs) -> Iterator[Process]:
-    return (Process(proc.pid) for proc in psutil.process_iter(*args, **kwargs))
-
 def abbrev_home(path: str) -> str:
     without_prefix = path.removeprefix(str(Path.home()))
     if without_prefix != path:
@@ -58,6 +43,8 @@ T = TypeVar("T")
 @dataclass
 class ProcessField(Generic[T]):
     """ Generic and base class for process fields. """
+
+    column_title: ClassVar[str]
 
     name: str
     value: T | psutil.Error
@@ -102,9 +89,8 @@ class ProcessField(Generic[T]):
         return process_field_for_name # type: ignore
 
 @dataclass
-class Cmdline0Field(ProcessField):
+class Cmdline0Field(ProcessField[str]):
     name: ClassVar[str] = "cmdline0"
-    value: str | None | psutil.Error
 
     def __str__(self):
         match self.value:
@@ -114,11 +100,9 @@ class Cmdline0Field(ProcessField):
         return super().__str__()
 
 @dataclass
-class TerminalField(ProcessField):
+class TerminalField(ProcessField[str]):
 
     name: ClassVar[str] = "terminal"
-
-    value: str | None | psutil.Error
 
     def __str__(self):
         match self.value:
