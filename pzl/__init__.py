@@ -1,7 +1,7 @@
 import argparse
 import builtins
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import itertools
 from pathlib import Path
 import re
@@ -77,9 +77,10 @@ class ProcessField(Generic[T]):
         return str(self.value)
 
     def format(self) -> Text:
+
         match self.value:
             case psutil.Error() as e:
-                return Text.from_markup(f"[dim]{type(e).__name__}")
+                return Text.from_markup(f"[dim]<{type(e).__name__}>")
             case None:
                 return Text.from_markup(f"[dim]none")
 
@@ -99,24 +100,6 @@ class ProcessField(Generic[T]):
             return cls(name, value)
 
         return process_field_for_name # type: ignore
-
-@dataclass
-class ParentField(ProcessField):
-    name: ClassVar[str] = "ppid"
-    value: int | None
-
-    #def format(self):
-    #    # Try to get the parent process.
-    #    parent = psutil.Process(self.value)
-    #    pname = parent.name()
-    #    if pname:
-    #        subgrid = Table.grid(expand=True)
-    #        subgrid.add_column(justify="left")
-    #        subgrid.add_column(justify="right")
-    #        subgrid.add_row(Text.from_markup(f"[bright]{self.value}"), Text.from_markup(f"[dim] ({pname})"))
-    #        return subgrid
-    #    else:
-    #        return str(self)
 
 @dataclass
 class Cmdline0Field(ProcessField):
@@ -144,21 +127,17 @@ class TerminalField(ProcessField):
 
         return super().__str__()
 
-T = TypeVar("T")
-ProcField = Union[T, psutil.Error]
-OptionalProcField = Union[T, psutil.Error, None]
-
 @dataclass
 class ProcInfo:
 
     pid: ProcessField[int]
-    ppid: ParentField
+    ppid: ProcessField[int]
     name: ProcessField[str]
-    cmdline: ProcessField[list[str]]
+    cmdline: ProcessField[list[str]] = field(repr=False)
     exe: ProcessField[Path | None]
     terminal: TerminalField
-    status: ProcField[str]
-    username: ProcField[str]
+    status: ProcessField[str]
+    username: ProcessField[str]
 
     _matched_field: Optional[str] = None
 
@@ -188,12 +167,15 @@ class ProcInfo:
     def cmdline0(self) -> Cmdline0Field:
 
         match self.cmdline.value:
-            case [cmd, *_rest]:
+            case [cmd, *_]:
                 return Cmdline0Field(cmd)
             case []:
                 return Cmdline0Field(None)
+            case None | psutil.Error() as value:
+                return Cmdline0Field(value)
 
-        return Cmdline0Field(self.cmdline.value)
+        # Should be unreachable.
+        assert False, f"{self.cmdline.value} is not a list, None, or psutil.Error (unreachable)"
 
     @property
     def parent_name(self) -> Optional[ProcessField[str]]:
@@ -213,67 +195,18 @@ class ProcInfo:
         row = []
         for field in fields:
             try:
-                value = getattr(self, field).format()
-            except AttributeError as e:
-                e.add_note(f"field {field} on {self} was None")
+                value = getattr(self, field)
+                formatted = value.format()
+            except Exception as e:
+                e.add_note(f"(while formatting {field} on {self})")
                 raise
 
             if field == self._matched_field:
-                row.append(Text.from_markup(f"[bold]{value}"))
+                row.append(Text.from_markup(f"[bold]{formatted}"))
             else:
-                row.append(value)
+                row.append(formatted)
 
         return row
-
-
-class ExceptNoneMeta(type):
-    def __getitem__(self, key):
-        return _ExceptNonePartial(exceptions=[key])
-
-class _ExceptNonePartial(metaclass=ExceptNoneMeta):
-    """ A partially applied `except_none`. """
-
-    def __init__(self, exceptions: Optional[list[type[Exception]]] = None, function : Optional[Callable] = None):
-        if exceptions is None:
-            exceptions = []
-        self.exceptions = list(exceptions)
-        self.function = function
-
-    def __call__(self, function: Callable):
-        return except_none(function, *self.exceptions)
-
-
-class except_none(metaclass=ExceptNoneMeta):
-    """ Converts the specified exceptions to None. """
-
-    def __init__(self, function: Optional[Callable] = None, *exceptions: type[Exception]):
-        self.function = function
-        self.exceptions = list(exceptions)
-
-    @classmethod
-    def on(cls, *exceptions: type[Exception]):
-        return _ExceptNonePartial(exceptions=list(exceptions))
-
-    def __call__(self, *args, **kwargs):
-        if self.function:
-            return self.function(*args, **kwargs)
-        else:
-            function = args[0]
-            args = args[1:]
-            return function(*args, **kwargs)
-
-
-def proc_map(proc, attrs=ATTRS):
-
-    proc_dict = proc.as_dict(attrs)
-    proc_dict["_self"] = proc
-
-    try:
-        proc_dict["cmdline0"] = proc_dict["cmdline"][0]
-    except IndexError:
-        pass
-
-    return proc_dict
 
 def main():
     parser = argparse.ArgumentParser("pzl")
@@ -316,50 +249,12 @@ def main():
     for col in ["pid", "parent", "", *"name cmdline0 exe terminal status username".split()]:
         table.add_column(col)
 
-    #sorted_procs = sorted(matched_processes, key=lambda proc: (proc.username, proc.ppid, proc.terminal))
     sorted_procs = sorted(matched_processes, key=ProcInfo.sorter)
     for proc in sorted_procs:
         table.add_row(*proc.format_row())
 
     Console().print(table)
 
-    return
-
-    matching_procs = []
-    for proc in map(proc_map, process_iter(ATTRS)):
-        if value.search(proc["name"]):
-            proc["_matched"] = "name"
-            matching_procs.append(proc)
-
-    table = Table(box=None)
-    for col in "pid name exe cmdline0 terminal".split():
-        table.add_column(col)
-
-    for proc in matching_procs:
-        row = []
-        for key in "pid name exe cmdline0 terminal".split():
-            # If that field is None, try to get it by method call,
-            # both in case it succeeds this time, and so we can grab the error.
-            if proc[key] is None:
-                try:
-                    field_getter = getattr(proc["_self"], key)
-                    field = field_getter()
-                except psutil.Error as e:
-                    execption_name = type(e).__name__
-                    field = f"[italic dim]<{execption_name}>[/]"
-            else:
-                field = str(proc[key])
-
-            if key == proc.get("_matched"):
-                row.append(Text.from_markup(f"[bold]{str(field)}[/bold]"))
-            else:
-                if field is not None:
-                    row.append(Text.from_markup(field))
-                else:
-                    row.append(Text.from_markup("[italic dim]<none>[/]"))
-        table.add_row(*row)
-
-    Console().print(table)
 
 if __name__ == "__main__":
     sys.exit(main())
