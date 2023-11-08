@@ -11,7 +11,7 @@
         pkgs = import nixpkgs { inherit system; };
         inherit (builtins) attrValues;
 
-        pzl = pkgs.callPackage ./. { };
+        pzl = pkgs.python3Packages.callPackage ./. { };
 
       in {
         packages.default = pzl;
@@ -23,6 +23,10 @@
           packages = attrValues {
             inherit (pkgs)
               pyright
+            ;
+          } ++ attrValues {
+            inherit (pkgs.python3Packages)
+              black
             ;
           };
         };

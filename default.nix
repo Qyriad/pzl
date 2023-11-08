@@ -1,30 +1,38 @@
-{ python3Packages }:
+{
+  buildPythonPackage,
+  buildPythonApplication,
+  fetchPypi,
+  setuptools,
+  wheel,
+  psutil,
+  tabulate,
+  rich,
+}:
 
 let
   inherit (builtins) attrValues readFile fromTOML;
 
   pname = "pzl";
   version = (fromTOML (readFile ./pyproject.toml)).project.version;
+
 in
-  python3Packages.buildPythonApplication {
+  buildPythonApplication {
     inherit pname version;
     src = ./.;
     format = "pyproject";
 
-    checkImports = [
+    pythonImportsCheck = [
       pname
     ];
 
-    nativeBuildInputs = attrValues {
-      inherit (python3Packages)
-        setuptools
-        wheel
-      ;
-    };
+    nativeBuildInputs = [
+      setuptools
+      wheel
+    ];
 
-    propagatedBuildInputs = attrValues {
-      inherit (python3Packages)
-        psutil
-      ;
-    };
+    propagatedBuildInputs = [
+      psutil
+      tabulate
+      rich
+    ];
   }
