@@ -1,20 +1,15 @@
 import argparse
-import builtins
-from collections.abc import Iterator
+from collections import defaultdict
 from dataclasses import dataclass, field
-import itertools
 from pathlib import Path
 import re
 import sys
-from typing import Any, ClassVar, Callable, Generic, Literal, Optional, Union, TypeVar
+from typing import ClassVar, Generic, Literal, Optional, TypeVar
 
 import psutil
-import rich, rich.text, rich.table, rich.console
-from rich.align import Align
 from rich.text import Text
 from rich.table import Table
 from rich.console import Console
-from rich.columns import Columns
 
 @dataclass
 class Selector:
@@ -25,12 +20,12 @@ ATTRS = [
     "cmdline",
     "exe",
     "name",
-    "cpu_percent",
     "pid",
     "ppid",
     "status",
     "terminal",
     "username",
+    "cpu_percent",
 ]
 
 def abbrev_home(path: str) -> str:
@@ -44,10 +39,15 @@ T = TypeVar("T")
 class ProcessField(Generic[T]):
     """ Generic and base class for process fields. """
 
-    column_title: ClassVar[str]
+    # Set from None in __post_init__ if necessary.
+    column_title: ClassVar[str] = None # type: ignore
 
     name: str
     value: T | psutil.Error
+
+    def __post_init__(self):
+        if type(self).column_title is None:
+            type(self).column_title = self.name
 
     def __lt__(self, other):
         return self.value < other.value
@@ -57,7 +57,6 @@ class ProcessField(Generic[T]):
         match self.value:
             case psutil.Error() as e:
                 return type(e).__name__
-
             case None:
                 return ""
 
@@ -89,7 +88,7 @@ class ProcessField(Generic[T]):
         return process_field_for_name # type: ignore
 
 @dataclass
-class Cmdline0Field(ProcessField[str]):
+class Cmdline0Field(ProcessField[str | None]):
     name: ClassVar[str] = "cmdline0"
 
     def __str__(self):
@@ -163,18 +162,26 @@ class ProcInfo:
 
     @property
     def parent_name(self) -> Optional[ProcessField[str]]:
-        match self.ppid.value:
-            case int(ppid):
-                parent = psutil.Process(ppid)
-                field = ProcessField(name="parent", value=parent.name())
-                field.format = lambda: Text.from_markup(f"[dim]({field.value})")
-                return field
+        try:
+            match self.ppid.value:
+                case int(ppid):
+                    parent = psutil.Process(ppid)
+                    field = ProcessField(name="parent", value=parent.name())
+                    field.format = lambda: Text.from_markup(f"[dim]({field.value})")
+                    return field
 
-        return None
+            return None
+        except psutil.Error as e:
+            return ProcessField[str](name="parent", value=e)
 
-    def format_row(self, fields=None) -> list[Text]:
+    def format_row(self, fields=None, extras=None) -> list[Text]:
         if not fields:
-            fields = "pid ppid parent_name name cmdline0 exe terminal status username".split()
+            fields = "pid ppid parent_name name cmdline0 exe terminal status".split()
+
+        if not extras:
+            extras = []
+
+        fields.extend(extras)
 
         row = []
         for field in fields:
@@ -216,26 +223,29 @@ def main():
     processes = [ProcInfo.from_process(process) for process in psutil.process_iter(ATTRS)]
 
     matched_processes = []
-
     for field_name in "name cmdline0 exe".split():
         for proc in (p for p in processes if p not in matched_processes):
             field_value = getattr(proc, field_name)
-            if not isinstance(field_value, psutil.Error) and field_value is not None:
-                try:
-                    if matcher_value.search(str(field_value)):
-                        proc._matched_field = field_name
-                        matched_processes.append(proc)
-                except:
-                    print(f"{proc=}, {field_value=}")
-                    raise
+            if matcher_value.search(str(field_value)):
+                proc._matched_field = field_name
+                matched_processes.append(proc)
+
+    extras = defaultdict(dict)
+    for proc in matched_processes:
+        extras["username"][proc.username.value] = proc.pid.value
 
     table = Table(box=None, expand=False)
-    for col in ["pid", "parent", "", *"name cmdline0 exe terminal status username".split()]:
-        table.add_column(col)
+    for col in ["pid", "parent", "", *"name cmdline0 exe terminal status".split()]:
+        table.add_column(col, overflow="fold")
+
+    extra_columns = []
+    if len(extras["username"].keys()) > 1:
+        extra_columns.append("username")
+        table.add_column("username")
 
     sorted_procs = sorted(matched_processes, key=ProcInfo.sorter)
     for proc in sorted_procs:
-        table.add_row(*proc.format_row())
+        table.add_row(*proc.format_row(extras=extra_columns))
 
     Console().print(table)
 
