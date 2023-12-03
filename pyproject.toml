@@ -13,3 +13,4 @@ dependencies = [
 
 [project.scripts]
 pzl = "pzl:main"
+pq = "pzl.pquery:main"
