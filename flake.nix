@@ -5,34 +5,24 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
+    flake-utils.lib.eachDefaultSystem (system: let
+      pkgs = import nixpkgs { inherit system; };
 
-        pkgs = import nixpkgs { inherit system; };
-        inherit (builtins) attrValues;
+      pzl = pkgs.callPackage ./package.nix { };
 
-        pzl = pkgs.python3Packages.callPackage ./. { };
+    in {
+      packages.default = pzl;
 
-      in {
-        packages.default = pzl;
-        devShells.default = pkgs.mkShell {
-          inputsFrom = [
-            pzl
-          ];
+      devShells.default = pkgs.mkShell {
+        inputsFrom = [ pzl ];
 
-          packages = attrValues {
-            inherit (pkgs)
-              pyright
-            ;
-          } ++ attrValues {
-            inherit (pkgs.python3Packages)
-              black
-            ;
-          };
-        };
-      }
+        packages = [
+          pkgs.pyright
+          pkgs.python3Packages.black
+        ];
+      };
 
-    ) # eachDefaultSystem
+    }) # eachDefaultSystem
 
   ;# outputs
 }
