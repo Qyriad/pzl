@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pzl"
 version = "0.0.1"
 dependencies = [
-  "psutil ~= 5.9",
+  "psutil >= 5.9",
   "tabulate ~= 0.9",
   "rich ~= 13.5",
 ]
