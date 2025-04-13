@@ -1,41 +1,33 @@
 {
   lib,
-  python3,
-}:
+  buildPythonApplication,
+  setuptools,
+  wheel,
+  psutil,
+  tabulate,
+  rich,
+  stringcase,
+}: let
+  pname = "pzl";
+  version = (lib.importTOML ./pyproject.toml).project.version;
+in buildPythonApplication {
+  inherit pname version;
+  src = lib.cleanSource ./.;
+  format = "pyproject";
 
-let
-  inherit (builtins) readFile fromTOML;
-  inherit (python3.pkgs)
-    buildPythonApplication
+  pythonImportsCheck = [
+    "pzl"
+  ];
+
+  nativeBuildInputs = [
     setuptools
     wheel
+  ];
+
+  propagatedBuildInputs = [
     psutil
     tabulate
     rich
     stringcase
-  ;
-
-  pname = "pzl";
-  version = (fromTOML (readFile ./pyproject.toml)).project.version;
-in
-  buildPythonApplication {
-    inherit pname version;
-    src = lib.cleanSource ./.;
-    format = "pyproject";
-
-    pythonImportsCheck = [
-      "pzl"
-    ];
-
-    nativeBuildInputs = [
-      setuptools
-      wheel
-    ];
-
-    propagatedBuildInputs = [
-      psutil
-      tabulate
-      rich
-      stringcase
-    ];
-  }
+  ];
+}

@@ -8,7 +8,7 @@
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs { inherit system; };
 
-      pzl = pkgs.callPackage ./package.nix { };
+      pzl = pkgs.python3Packages.callPackage ./package.nix { };
 
     in {
       packages.default = pzl;
